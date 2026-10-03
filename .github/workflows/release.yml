@@ -1,0 +1,143 @@
+name: Release APK and DMG
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag, for example v2.0.0'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - name: Validate release tag
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected vMAJOR.MINOR.PATCH'; exit 1; }
+          tag_sha=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          [[ "$tag_sha" == "$(git rev-parse HEAD)" ]] || exit 1
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "sha=$tag_sha" >> "$GITHUB_OUTPUT"
+  android:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test shared code and build installable APK
+        run: xvfb-run --auto-servernum ./gradlew -PappVersion="$APP_VERSION" :composeApp:desktopTest :androidApp:assembleDebug --console=plain
+      - name: Name release asset
+        run: |
+          mkdir -p release-assets
+          cp androidApp/build/outputs/apk/debug/androidApp-debug.apk "release-assets/txtNote-$APP_VERSION-android-debug.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: release-assets/*.apk
+          if-no-files-found: error
+  macos:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test and package DMG
+        run: ./gradlew -PdesktopOnly=true -PappVersion="$APP_VERSION" :composeApp:desktopTest :composeApp:packageDmg --console=plain
+      - name: Name release asset
+        run: |
+          mkdir -p release-assets
+          packages=(composeApp/build/compose/binaries/main/dmg/*.dmg)
+          [[ ${#packages[@]} -eq 1 && -f "${packages[0]}" ]] || exit 1
+          cp "${packages[0]}" "release-assets/txtNote-$APP_VERSION-macos-$RELEASE_ARCH.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: release-assets/*.dmg
+          if-no-files-found: error
+  publish:
+    needs: [prepare, android, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create checksums
+        working-directory: release-assets
+        run: sha256sum *.apk *.dmg > SHA256SUMS.txt
+      - name: Prepare release notes
+        run: |
+          cat > release-notes.md <<'NOTES'
+          Kotlin Multiplatform edition of txtNote, with local notes, search, TXT exchange, image attachments, backups, and customizable theme colors.
+
+          - Android: install the APK (Android 7.0+). This is a debug-signed testing build; export a backup before replacing an installation with a different signing certificate.
+          - macOS: choose arm64 for Apple Silicon, or x64 for Intel. The DMGs include the Java runtime and do not require a JDK installation.
+          - macOS builds are not signed with an Apple Developer certificate or notarized.
+          - SHA256SUMS.txt contains the checksums of all installers.
+          NOTES
+      - name: Publish GitHub Release
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* --verify-tag --title "txtNote $APP_VERSION" --notes-file release-notes.md
+          fi
