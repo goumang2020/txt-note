@@ -13,7 +13,9 @@
 - 系统剪贴板复制 / 粘贴；Android / iOS 系统分享；桌面通过文件导出分享。
 - 图片附件、自定义背景、中 / 英 / 日语言切换、深浅色主题、字号设置。
 - 六种主题色（森林绿、海洋蓝、鸢尾紫、暖橘色、玫瑰粉、石墨灰），支持自定义 `#RRGGBB` 颜色；立即生效，重启和备份恢复后保留。
-- 本地草稿恢复；切换笔记或关闭桌面窗口时提示保存未保存修改。
+- Android 自动保存：输入停顿、返回列表和切到后台时保存，不弹出保存确认；空白新建页返回不产生文件。桌面 / iOS 保留未保存修改确认。
+- 文件名可留空：按正文第一句（或第一行）生成，过滤无效字符并限制长度，自动处理同名；可随时手动重命名。标题生成逻辑集中在 `suggestedNoteName`，方便后续替换为大模型摘要。
+- 本地草稿恢复。
 - JSON 完整备份与追加恢复，包含分类、时间、图片、设置及草稿。同名导入自动重命名。
 - 临时文件写入后原子替换，保留上一代数据；主文件损坏时从上一代恢复，并保留损坏文件。
 
@@ -53,7 +55,18 @@ Android 7.0+（API 24），编译 / 目标 SDK 36。用 Android Studio 打开根
 ./gradlew :androidApp:assembleDebug
 ```
 
-APK：`androidApp/build/outputs/apk/debug/androidApp-debug.apk`。这是可测试的 debug 包；商店发行时需另配签名。
+开发 APK：`androidApp/build/outputs/apk/debug/androidApp-debug.apk`。
+
+构建正式 Release APK：
+
+```bash
+./scripts/build-android-release.sh
+./scripts/verify-release-apk.sh androidApp/build/outputs/apk/release/androidApp-release.apk
+```
+
+输出为 `androidApp/build/outputs/apk/release/androidApp-release.apk`。Release 禁用调试，开启 R8 优化和资源压缩，使用固定私钥签名。脚本从本机 `~/.config/txtnote/signing/signing.json` 和 `release.p12` 读取凭据，也可以提供 `ANDROID_SIGNING_KEYSTORE`、`ANDROID_SIGNING_STORE_PASSWORD`、`ANDROID_SIGNING_KEY_ALIAS`、`ANDROID_SIGNING_KEY_PASSWORD` 环境变量。私钥和密码均不进入 Git。
+
+**请安全备份 `~/.config/txtnote/signing/`**，后续版本必须使用同一签名。仓库中的 `androidApp/release-cert.pem` 只包含公开证书，验证脚本检查签名一致且 APK 不可调试。
 
 系统文件选择器支持设备上可用的云盘提供程序，无需授予全盘存储权限。
 
@@ -63,12 +76,12 @@ APK：`androidApp/build/outputs/apk/debug/androidApp-debug.apk`。这是可测�
 
 | 文件 | 平台 |
 | --- | --- |
-| `txtNote-<版本>-android-debug.apk` | Android 7.0+，debug 签名测试包 |
+| `txtNote-<版本>-android-release.apk` | Android 7.0+，固定签名的 Release 包 |
 | `txtNote-<版本>-macos-arm64.dmg` | Apple Silicon Mac，内含 Java 运行时 |
 | `txtNote-<版本>-macos-x64.dmg` | Intel Mac，内含 Java 运行时 |
 | `SHA256SUMS.txt` | 安装包的 SHA-256 校验值 |
 
-macOS 安装包暂未使用 Apple Developer 证书签名或公证。Android 发布的是测试包，不使用正式商店签名；不同构建的 debug 签名证书可能不同，替换安装前请先备份笔记。
+macOS 安装包暂未使用 Apple Developer 证书签名或公证。Android 使用固定 Release 签名，后续 Release 版本可覆盖升级。旧 `v2.0.1` debug 包与正式签名不同：请先导出 JSON 备份，卸载 debug 包，安装 Release 包后恢复。
 
 普通 `master` 推送和 Pull Request 触发 `.github/workflows/build.yml`，检查 Windows / Linux / macOS 桌面测试和打包、Android APK、iOS 整包。
 
@@ -76,13 +89,15 @@ macOS 安装包暂未使用 Apple Developer 证书签名或公证。Android 发�
 
 ```bash
 # 先将全部代码推送到 GitHub，再推送发布标签。
-git tag -a v2.0.1 -m 'txtNote 2.0.1'
-git push origin v2.0.1
+git tag -a v2.0.2 -m 'txtNote 2.0.1'
+git push origin v2.0.2
 ```
 
 `vMAJOR.MINOR.PATCH` 标签会触发 `.github/workflows/release.yml`。流程完成测试、构建 APK 和两种 DMG 后，自动创建 GitHub Release 并上传安装包及校验值。标签中的版本会传给 Gradle，设置 Android 和 macOS 安装包版本。
 
-也可以在 GitHub Actions 中手动运行 **Release APK and DMG**，填写已存在的版本标签。重复运行会重新上传该版本的安装包。自动发布只使用工作流自带的 `GITHUB_TOKEN`，无需额外配置 PAT；写权限只授予发布 job。
+也可以在 GitHub Actions 中手动运行 **Release APK and DMG**，填写已存在的版本标签。重复运行会重新上传该版本的安装包。自动发布使用工作流自带的 `GITHUB_TOKEN`；写权限只授予发布 job。
+
+Android 签名使用四个仓库 Actions Secrets：`ANDROID_KEYSTORE_BASE64`（PKCS12 私钥文件的 base64）、`ANDROID_SIGNING_STORE_PASSWORD`、`ANDROID_SIGNING_KEY_ALIAS`、`ANDROID_SIGNING_KEY_PASSWORD`。这些已经配置；私钥只在构建 runner 的临时目录还原，构建后删除。缺少凭据会明确失败，不会降级到 debug 签名。PR 检查同时编译 Debug 和未签名 Release，不向 PR 提供签名私钥。
 
 ## iOS
 

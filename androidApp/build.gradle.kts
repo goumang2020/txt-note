@@ -3,7 +3,7 @@ plugins {
     kotlin("android")
     kotlin("plugin.compose")
 }
-val appVersion = providers.gradleProperty("appVersion").orElse("2.0.0").get()
+val appVersion = providers.gradleProperty("appVersion").orElse("2.0.2").get()
 require(Regex("[0-9]+\\.[0-9]+\\.[0-9]+").matches(appVersion)) { "appVersion must be major.minor.patch" }
 val versionParts = appVersion.split('.').map(String::toInt)
 require(versionParts[0] in 0..2099 && versionParts[1] in 0..999 && versionParts[2] in 0..999) { "Version exceeds Android version code limits" }
@@ -19,6 +19,24 @@ android {
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     buildFeatures { compose = true }
+    val releaseKeyStore = System.getenv("ANDROID_SIGNING_KEYSTORE")
+    if (!releaseKeyStore.isNullOrBlank()) {
+        signingConfigs.create("release") {
+            storeFile = file(releaseKeyStore)
+            storePassword = requireNotNull(System.getenv("ANDROID_SIGNING_STORE_PASSWORD"))
+            keyAlias = requireNotNull(System.getenv("ANDROID_SIGNING_KEY_ALIAS"))
+            keyPassword = requireNotNull(System.getenv("ANDROID_SIGNING_KEY_PASSWORD"))
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            isDebuggable = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            if (!releaseKeyStore.isNullOrBlank()) signingConfig = signingConfigs.getByName("release")
+        }
+    }
 }
 dependencies {
     implementation(project(":composeApp"))

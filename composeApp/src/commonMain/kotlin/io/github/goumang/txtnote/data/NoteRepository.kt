@@ -37,12 +37,14 @@ class NoteRepository(private val store: NotebookStore, private val platform: Pla
         var savedId = ""
         commit { book ->
             val old = draft.noteId?.let { id -> book.notes.find { it.id == id } }
-            val name = normalizeName(draft.name)
+            val name = if (draft.name.isBlank()) {
+                uniqueName(suggestedNoteName(draft.content), book.notes.filter { it.id != draft.noteId }.map { it.name }.toSet())
+            } else normalizeName(draft.name)
             require(book.notes.none { it.id != old?.id && it.name.equals(name, true) }) {
                 "A note with this name already exists / 同名笔记已存在"
             }
             val now = platform.now()
-            savedId = old?.id ?: platform.newId()
+            savedId = old?.id ?: draft.noteId ?: platform.newId()
             val note = Note(savedId, name, draft.content, draft.category, old?.createdAt ?: now, now, old?.pinned ?: false, draft.attachment)
             book.copy(notes = if (old == null) book.notes + note else book.notes.map { if (it.id == old.id) note else it }, draft = null)
         }

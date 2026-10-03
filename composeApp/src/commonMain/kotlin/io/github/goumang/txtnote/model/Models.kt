@@ -77,3 +77,15 @@ fun uniqueName(requested: String, existing: Set<String>): String {
     while ("${stem}_$suffix.txt".lowercase() in occupied) suffix++
     return "${stem}_$suffix.txt"
 }
+
+/** Local title strategy; replace this implementation when a summarization service is available. */
+fun suggestedNoteName(content: String): String {
+    val text = content.trimStart()
+    val end = text.indexOfFirst { it in "。！？.!?\n\r" }
+    val sentence = (if (end >= 0) text.take(end) else text).trim()
+    val stem = sentence.map { if (it in "/\\:*?\"<>|" || it.code < 32) ' ' else it }
+        .joinToString("").replace(Regex("\\s+"), " ").trim().trimEnd('.').take(60).trim()
+    return normalizeName(stem.ifBlank { "未命名笔记" })
+}
+
+fun Draft.fileName(): String = if (name.isBlank()) suggestedNoteName(content) else normalizeName(name)

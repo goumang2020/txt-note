@@ -14,6 +14,8 @@ import io.github.goumang.txtnote.platform.DesktopServices
 import io.github.goumang.txtnote.ui.TxtNoteApp
 import org.junit.Rule
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 
 class EditorUiTest {
@@ -58,6 +60,133 @@ class EditorUiTest {
         rule.waitUntil(10_000) { rule.onAllNodesWithTag("search").fetchSemanticsNodes().isNotEmpty() }
         assertEquals(0, repository.state.value.notes.size)
     }
+    @Test fun androidBackAutosavesUnnamedNoteAndEditingKeepsOneNote() {
+        var stored: Notebook? = null
+        var systemBack: (() -> Unit)? = null
+        val repository = NoteRepository(object : NotebookStore {
+            override fun load() = stored
+            override fun save(notebook: Notebook) { stored = notebook }
+        }, DesktopServices())
+        rule.setContent { Box(Modifier.requiredSize(390.dp, 740.dp)) {
+            TxtNoteApp(repository, DesktopServices(), autoSave = true, onBackHandler = { systemBack = it })
+        } }
+        rule.waitUntil(10_000) { rule.onAllNodesWithText("新建笔记").fetchSemanticsNodes().isNotEmpty() }
+        rule.onAllNodesWithText("新建笔记")[0].performClick()
+        rule.onNodeWithTag("note-content").performTextInput("正文第一句。后面还有内容。")
+        rule.runOnIdle { systemBack!!() }
+        rule.waitUntil(10_000) { rule.onAllNodesWithTag("search").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("保存这次修改？").assertDoesNotExist()
+        assertEquals("正文第一句.txt", stored!!.notes.single().name)
+        val id = stored!!.notes.single().id
+        rule.onNodeWithText("正文第一句").performClick()
+        rule.onNodeWithTag("note-content").performTextReplacement("正文第一句。后面还有内容。追加内容")
+        rule.onNodeWithContentDescription("返回").performClick()
+        rule.waitUntil(10_000) { rule.onAllNodesWithTag("search").fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(id, stored!!.notes.single().id)
+        assertEquals("正文第一句。后面还有内容。追加内容", stored!!.notes.single().content)
+    }
+
+    @Test fun androidAutosavesWhileEditingAndFlushesOnBackground() {
+        var saveInBackground: (() -> Unit)? = null
+        val repository = NoteRepository(object : NotebookStore {
+            override fun load(): Notebook? = null
+            override fun save(notebook: Notebook) {}
+        }, DesktopServices())
+        rule.setContent { Box(Modifier.requiredSize(390.dp, 740.dp)) {
+            TxtNoteApp(repository, DesktopServices(), autoSave = true, onSaveHandler = { saveInBackground = it })
+        } }
+        rule.waitUntil(10_000) { rule.onAllNodesWithText("新建笔记").fetchSemanticsNodes().isNotEmpty() }
+        rule.onAllNodesWithText("新建笔记")[0].performClick()
+        rule.onNodeWithTag("note-content").performTextInput("自动保存正文。")
+        rule.waitUntil(10_000) { repository.state.value.notes.singleOrNull()?.content == "自动保存正文。" }
+        rule.onNodeWithTag("note-content").assertExists()
+        rule.onNodeWithTag("note-content").performTextInput("后台前的修改")
+        rule.runOnIdle { saveInBackground!!() }
+        rule.waitUntil(10_000) { repository.state.value.notes.singleOrNull()?.content == "自动保存正文。后台前的修改" }
+    }
+
+    @Test fun androidEmptyNoteReturnsWithoutCreatingFile() {
+        val repository = NoteRepository(object : NotebookStore {
+            override fun load(): Notebook? = null
+            override fun save(notebook: Notebook) {}
+        }, DesktopServices())
+        rule.setContent { Box(Modifier.requiredSize(390.dp, 740.dp)) { TxtNoteApp(repository, DesktopServices(), autoSave = true) } }
+        rule.waitUntil(10_000) { rule.onAllNodesWithText("新建笔记").fetchSemanticsNodes().isNotEmpty() }
+        rule.onAllNodesWithText("新建笔记")[0].performClick()
+        rule.onNodeWithContentDescription("返回").performClick()
+        rule.onNodeWithTag("search").assertExists()
+        rule.onNodeWithText("保存这次修改？").assertDoesNotExist()
+        assertEquals(0, repository.state.value.notes.size)
+    }
+
+    @Test fun androidFailedAutosaveKeepsVisibleTextAndDoesNotNavigate() {
+        var fail = false
+        var stored: Notebook? = null
+        val repository = NoteRepository(object : NotebookStore {
+            override fun load() = stored
+            override fun save(notebook: Notebook) { if (fail) error("Disk full"); stored = notebook }
+        }, DesktopServices())
+        rule.setContent { Box(Modifier.requiredSize(390.dp, 740.dp)) { TxtNoteApp(repository, DesktopServices(), autoSave = true) } }
+        rule.waitUntil(10_000) { rule.onAllNodesWithText("新建笔记").fetchSemanticsNodes().isNotEmpty() }
+        rule.onAllNodesWithText("新建笔记")[0].performClick()
+        rule.onNodeWithTag("note-content").performTextInput("已保存正文。")
+        rule.waitUntil(10_000) { repository.state.value.notes.size == 1 }
+        rule.runOnIdle { fail = true }
+        rule.onNodeWithTag("note-content").performTextReplacement("需要保留的修改。")
+        rule.onNodeWithContentDescription("返回").performClick()
+        rule.waitUntil(10_000) { rule.onAllNodesWithText("Disk full").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag("note-content").assertTextContains("需要保留的修改。")
+        rule.onNodeWithTag("search").assertDoesNotExist()
+        rule.onNodeWithText("保存这次修改？").assertDoesNotExist()
+        assertEquals("已保存正文。", stored!!.notes.single().content)
+    }
+
+    @Test fun androidInvalidExplicitNameRetainsRecoverableDraft() {
+        var stored: Notebook? = null
+        val repository = NoteRepository(object : NotebookStore {
+            override fun load() = stored
+            override fun save(notebook: Notebook) { stored = notebook }
+        }, DesktopServices())
+        rule.setContent { Box(Modifier.requiredSize(390.dp, 740.dp)) { TxtNoteApp(repository, DesktopServices(), autoSave = true) } }
+        rule.waitUntil(10_000) { rule.onAllNodesWithText("新建笔记").fetchSemanticsNodes().isNotEmpty() }
+        rule.onAllNodesWithText("新建笔记")[0].performClick()
+        rule.onNodeWithTag("note-name").performTextInput("../invalid")
+        rule.onNodeWithTag("note-content").performTextInput("名称无效也应保留正文。")
+        rule.onNodeWithContentDescription("返回").performClick()
+        rule.waitUntil(10_000) { stored?.draft?.content == "名称无效也应保留正文。" }
+        rule.onNodeWithTag("note-content").assertTextContains("名称无效也应保留正文。")
+        assertEquals(0, stored!!.notes.size)
+    }
+
+    @Test fun androidBackDuringInFlightAutosaveKeepsLatestTextWithoutDuplicates() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        var systemBack: (() -> Unit)? = null
+        val repository = NoteRepository(object : NotebookStore {
+            override fun load(): Notebook? = null
+            override fun save(notebook: Notebook) {
+                if (notebook.notes.isNotEmpty() && entered.count > 0) {
+                    entered.countDown()
+                    check(release.await(10, TimeUnit.SECONDS))
+                }
+            }
+        }, DesktopServices())
+        rule.setContent { Box(Modifier.requiredSize(390.dp, 740.dp)) {
+            TxtNoteApp(repository, DesktopServices(), autoSave = true, onBackHandler = { systemBack = it })
+        } }
+        try {
+            rule.waitUntil(10_000) { rule.onAllNodesWithText("新建笔记").fetchSemanticsNodes().isNotEmpty() }
+            rule.onAllNodesWithText("新建笔记")[0].performClick()
+            rule.onNodeWithTag("note-content").performTextInput("第一版正文。")
+            rule.waitUntil(10_000) { entered.count == 0L }
+            rule.onNodeWithTag("note-content").performTextReplacement("返回时的最新正文。")
+            rule.runOnIdle { systemBack!!(); release.countDown() }
+            rule.waitUntil(10_000) { rule.onAllNodesWithTag("search").fetchSemanticsNodes().isNotEmpty() }
+            assertEquals("返回时的最新正文。", repository.state.value.notes.single().content)
+            rule.onNodeWithText("保存这次修改？").assertDoesNotExist()
+        } finally { release.countDown() }
+    }
+
     @Test fun settingsApplyPresetAndCustomColorsImmediately() {
         val repository = NoteRepository(object : NotebookStore {
             override fun load(): Notebook? = null

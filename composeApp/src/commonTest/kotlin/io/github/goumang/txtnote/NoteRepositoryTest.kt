@@ -28,6 +28,33 @@ private class TestPlatform : PlatformServices {
 }
 
 class NoteRepositoryTest {
+    @Test fun blankNamesUseFirstSentenceAndResolveCollisions() = runTest {
+        val repository = NoteRepository(MemoryStore(), TestPlatform()); repository.load()
+        repository.save(Draft(content = "  今天去公园散步。第二句不作为标题。"))
+        repository.save(Draft(content = "今天去公园散步！另一个笔记"))
+        repository.save(Draft(content = "Hello world. Another sentence."))
+        assertEquals(listOf("今天去公园散步.txt", "今天去公园散步_2.txt", "Hello world.txt"), repository.state.value.notes.map { it.name })
+    }
+    @Test fun autosaveReusesReservedIdentityAcrossRepeatedWrites() = runTest {
+        val store = MemoryStore(); val repository = NoteRepository(store, TestPlatform()); repository.load()
+        val draft = Draft(noteId = "editor-id", content = "第一句。")
+        repository.save(draft)
+        val before = repository.state.value.notes.single()
+        repository.save(draft.copy(content = "新标题。更新正文"))
+        val after = repository.state.value.notes.single()
+        assertEquals(before.id, after.id); assertEquals(before.createdAt, after.createdAt)
+        assertEquals("新标题.txt", after.name)
+        assertEquals(1, repository.state.value.notes.size)
+        assertEquals(after, NoteRepository(store, TestPlatform()).also { it.load() }.state.value.notes.single())
+    }
+    @Test fun automaticTitlesAreSafeBoundedAndHaveEmptyFallback() {
+        assertEquals("a b c d.txt", suggestedNoteName("a/b:c|d。内容"))
+        assertEquals("第一行.txt", suggestedNoteName("\n第一行\n第二行"))
+        assertEquals("未命名笔记.txt", suggestedNoteName(" 。"))
+        assertEquals(64, suggestedNoteName("字".repeat(100)).length)
+        assertEquals("手动标题.txt", Draft(name = "手动标题", content = "其他正文。").fileName())
+    }
+
     @Test fun editingKeepsIdentityCreationTimeAndAttachment() = runTest {
         val store = MemoryStore(); val repository = NoteRepository(store, TestPlatform()); repository.load()
         val id = repository.save(Draft(name = "hello", content = "你好", attachment = Attachment("image.png", "YWJj")))

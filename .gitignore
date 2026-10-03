@@ -13,3 +13,11 @@ xcuserdata/
 .tools/
 release-assets/
 release-notes.md
+
+# Never commit signing private keys or passwords.
+*.jks
+*.keystore
+*.p12
+*.pfx
+keystore.properties
+release-signing.env

@@ -42,6 +42,9 @@ jobs:
     timeout-minutes: 30
     env:
       APP_VERSION: ${{ needs.prepare.outputs.version }}
+      ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+      ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+      ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,12 +59,25 @@ jobs:
           log-accepted-android-sdk-licenses: false
       - run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Test shared code and build installable APK
-        run: xvfb-run --auto-servernum ./gradlew -PappVersion="$APP_VERSION" :composeApp:desktopTest :androidApp:assembleDebug --console=plain
+      - name: Restore release signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          [[ -n "$KEYSTORE_BASE64" && -n "$ANDROID_SIGNING_STORE_PASSWORD" && -n "$ANDROID_SIGNING_KEY_ALIAS" && -n "$ANDROID_SIGNING_KEY_PASSWORD" ]] || { echo 'Configure Android release signing secrets'; exit 1; }
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/txtnote-release.p12"
+          echo "ANDROID_SIGNING_KEYSTORE=$RUNNER_TEMP/txtnote-release.p12" >> "$GITHUB_ENV"
+      - name: Test shared code and build signed Release APK
+        run: xvfb-run --auto-servernum ./gradlew -PappVersion="$APP_VERSION" :composeApp:desktopTest :androidApp:assembleRelease --console=plain
+      - name: Verify release signature and build type
+        run: ./scripts/verify-release-apk.sh androidApp/build/outputs/apk/release/androidApp-release.apk
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/txtnote-release.p12"
       - name: Name release asset
         run: |
           mkdir -p release-assets
-          cp androidApp/build/outputs/apk/debug/androidApp-debug.apk "release-assets/txtNote-$APP_VERSION-android-debug.apk"
+          cp androidApp/build/outputs/apk/release/androidApp-release.apk "release-assets/txtNote-$APP_VERSION-android-release.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: release-android
@@ -132,7 +148,8 @@ jobs:
           cat > release-notes.md <<'NOTES'
           Kotlin Multiplatform edition of txtNote, with local notes, search, TXT exchange, image attachments, backups, and customizable theme colors.
 
-          - Android: install the APK (Android 7.0+). This is a debug-signed testing build; export a backup before replacing an installation with a different signing certificate.
+          - Android editing automatically saves on pause, back navigation, and backgrounding. File names can be left blank to derive a title from the first sentence; duplicate titles are handled automatically.
+          - Android: install the APK (Android 7.0+). This is an optimized, non-debuggable Release build, signed with the fixed txtNote release certificate. When switching from the older debug APK, export a backup, uninstall the debug app, then install and restore the backup. Subsequent Release builds support in-place updates.
           - macOS: choose arm64 for Apple Silicon, or x64 for Intel. The DMGs include the Java runtime and do not require a JDK installation.
           - macOS builds are not signed with an Apple Developer certificate or notarized.
           - SHA256SUMS.txt contains the checksums of all installers.

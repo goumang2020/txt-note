@@ -40,6 +40,8 @@ import io.github.goumang.txtnote.platform.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.io.encoding.Base64
 
 private val Ink: Color @Composable get() = LocalThemePalette.current.ink
@@ -50,10 +52,12 @@ private fun Note.toDraft() = Draft(id, name, content, category, attachment)
 @Composable
 fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
                closeRequested: Boolean = false, onCloseReady: () -> Unit = {},
-               onCloseCancelled: () -> Unit = {}, onBackHandler: ((() -> Unit)?) -> Unit = {}) {
+               onCloseCancelled: () -> Unit = {}, onBackHandler: ((() -> Unit)?) -> Unit = {},
+               autoSave: Boolean = false, onSaveHandler: ((() -> Unit)?) -> Unit = {}) {
     val book by repository.state.collectAsState()
     val scope = rememberCoroutineScope()
     val snack = remember { SnackbarHostState() }
+    val editorWrites = remember { Mutex() }
     var loaded by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -66,8 +70,9 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
     var deleteIds by remember { mutableStateOf(emptySet<String>()) }
     var pendingNavigation by remember { mutableStateOf<(() -> Unit)?>(null) }
     val s = remember(book.preferences.language) { Strings(book.preferences.language) }
+    var savedEditor by remember { mutableStateOf<Draft?>(null) }
     val original = book.notes.find { it.id == draft?.noteId }
-    val dirty = draft != null && (original?.toDraft() != draft) &&
+    val dirty = draft != null && ((if (autoSave) savedEditor?.takeIf { it.noteId == draft?.noteId } ?: original?.toDraft() else original?.toDraft()) != draft) &&
         (original != null || draft!!.name.isNotBlank() || draft!!.content.isNotBlank() || draft!!.attachment != null)
     var persistedDraft by remember { mutableStateOf<Draft?>(null) }
 
@@ -82,16 +87,26 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
             finally { busy = false }
         }
     }
+    suspend fun saveAutomatically(snapshot: Draft) = editorWrites.withLock {
+        if (draft != snapshot) return@withLock
+        // Keep recoverable text even if an explicitly entered file name cannot be saved.
+        repository.saveDraft(snapshot)
+        repository.save(snapshot)
+        if (draft == snapshot) savedEditor = snapshot
+    }
     fun navigate(block: () -> Unit) {
-        if (dirty) pendingNavigation = block else block()
+        if (dirty && autoSave) action {
+            draft?.let { saveAutomatically(it) }
+            block()
+        } else if (dirty) pendingNavigation = block else block()
     }
     fun edit(note: Note) = navigate { draft = note.toDraft() }
-    fun create() = navigate { draft = Draft(category = category ?: Category.DAILY) }
+    fun create() = navigate { draft = Draft(noteId = if (autoSave) platform.newId() else null, category = category ?: Category.DAILY) }
 
     LaunchedEffect(repository) {
         try {
             repository.load()
-            draft = repository.state.value.draft
+            draft = repository.state.value.draft?.let { if (autoSave && it.noteId == null) it.copy(noteId = platform.newId()) else it }
             persistedDraft = draft
             loaded = true
         } catch (e: Exception) { loadError = e.message ?: "Cannot open notebook" }
@@ -100,20 +115,32 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
     LaunchedEffect(draft, loaded, dirty) {
         if (loaded) {
             val snapshot = if (dirty) draft else null
-            try { delay(250); repository.saveDraft(snapshot); persistedDraft = snapshot }
+            try {
+                delay(250)
+                if (autoSave) {
+                    if (snapshot != null) saveAutomatically(snapshot)
+                } else {
+                    repository.saveDraft(snapshot)
+                    persistedDraft = snapshot
+                }
+            }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { message(e.message ?: "Cannot retain draft") }
         }
     }
     LaunchedEffect(closeRequested) {
         if (closeRequested && loaded) {
-            if (dirty) pendingNavigation = onCloseReady else onCloseReady()
+            navigate(onCloseReady)
         } else if (closeRequested && loadError != null) onCloseReady()
     }
     val currentBack by rememberUpdatedState<() -> Unit> { navigate { draft = null } }
     val stableBack = remember { { currentBack() } }
     val backAction: (() -> Unit)? = if (draft != null) stableBack else null
-    SideEffect { onBackHandler(backAction) }
+    val currentSave by rememberUpdatedState<() -> Unit> {
+        if (autoSave && dirty) action { draft?.let { saveAutomatically(it) } }
+    }
+    val stableSave = remember { { currentSave() } }
+    SideEffect { onBackHandler(backAction); onSaveHandler(if (autoSave) stableSave else null) }
 
     val dark = when (book.preferences.theme) { ThemeMode.DARK -> true; ThemeMode.LIGHT -> false; ThemeMode.SYSTEM -> isSystemInDarkTheme() }
     val palette = remember(book.preferences.themeColor, book.preferences.customThemeColor) { book.preferences.palette() }
@@ -169,7 +196,7 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
                                 if (wide || draft != null) Box(Modifier.weight(1f).fillMaxHeight()) {
                                     val current = draft
                                     if (current == null) EmptyEditor(s, ::create) else Editor(s, current, original, book.preferences, platform, busy, dirty,
-                                        retained = persistedDraft == draft, compact = !wide,
+                                        retained = persistedDraft == draft, compact = !wide, autoSave = autoSave,
                                         onChange = { draft = it }, onSave = { action {
                                             val id = repository.save(current)
                                             draft = repository.state.value.notes.first { it.id == id }.toDraft()
@@ -185,8 +212,8 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
                                                 draft = current.copy(attachment = Attachment(it.name, Base64.encode(it.bytes)))
                                             }
                                         } }, onExport = { action {
-                                            if (platform.exportFile(normalizeName(current.name), current.content.encodeToByteArray(), "text/plain")) message(s.saved)
-                                        } }, onShare = { action { platform.shareText(normalizeName(current.name), current.content) } })
+                                            if (platform.exportFile(current.fileName(), current.content.encodeToByteArray(), "text/plain")) message(s.saved)
+                                        } }, onShare = { action { platform.shareText(current.fileName(), current.content) } })
                                 }
                             }
                         }
@@ -215,8 +242,10 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
             if (deleteIds.isNotEmpty()) AlertDialog(onDismissRequest = { if (!busy) deleteIds = emptySet() }, title = { Text("${s.delete} ${deleteIds.size}") }, text = { Text(s.deleteBody) },
                 confirmButton = { TextButton(enabled = !busy, onClick = { action {
                     val ids = deleteIds
-                    repository.delete(ids)
-                    if (draft?.noteId in ids) draft = null
+                    editorWrites.withLock {
+                        repository.delete(ids)
+                        if (draft?.noteId in ids) draft = null
+                    }
                     selection = selection - ids
                     deleteIds = emptySet()
                 } }) { Text(s.delete, color = MaterialTheme.colorScheme.error) } },
@@ -225,10 +254,10 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
                 title = { Text(s.discardTitle) }, text = { Text(s.discardBody) },
                 confirmButton = { TextButton(enabled = !busy, onClick = { action {
                     val current = draft ?: return@action
-                    repository.save(current)
+                    val id = repository.save(current)
                     val next = pendingNavigation
                     pendingNavigation = null
-                    draft = repository.state.value.notes.lastOrNull { it.name == normalizeName(current.name) }?.toDraft()
+                    draft = repository.state.value.notes.first { it.id == id }.toDraft()
                     next?.invoke()
                 } }) { Text(s.save) } }, dismissButton = { Row {
                     TextButton(enabled = !busy, onClick = { pendingNavigation = null; onCloseCancelled() }) { Text(s.cancel) }
@@ -373,7 +402,7 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
 }
 
 @Composable private fun Editor(s: Strings, draft: Draft, original: Note?, prefs: Preferences, platform: PlatformServices,
-    busy: Boolean, dirty: Boolean, retained: Boolean, compact: Boolean, onChange: (Draft) -> Unit, onSave: () -> Unit,
+    busy: Boolean, dirty: Boolean, retained: Boolean, compact: Boolean, autoSave: Boolean, onChange: (Draft) -> Unit, onSave: () -> Unit,
     onBack: () -> Unit, onDelete: () -> Unit, onPin: () -> Unit, onCopy: () -> Unit, onPaste: () -> Unit,
     onAttach: () -> Unit, onExport: () -> Unit, onShare: () -> Unit) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -399,10 +428,11 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
                         }
                     }
                 }
-                Button(onClick = onSave, enabled = !busy && (dirty || original == null), shape = RoundedCornerShape(10.dp)) { Icon(Icons.Default.Check, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(s.save) }
+                if (autoSave) Text(s.text("自动保存", "Auto-save", "自動保存"), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else Button(onClick = onSave, enabled = !busy && (dirty || original == null), shape = RoundedCornerShape(10.dp)) { Icon(Icons.Default.Check, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(s.save) }
             }
             Spacer(Modifier.height(18.dp))
-            OutlinedTextField(draft.name, { onChange(draft.copy(name = it)) }, modifier = Modifier.fillMaxWidth().testTag("note-name"), label = { Text(s.filename) }, suffix = { if (!draft.name.endsWith(".txt")) Text(".txt", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+            OutlinedTextField(draft.name, { onChange(draft.copy(name = it)) }, modifier = Modifier.fillMaxWidth().testTag("note-name"), label = { Text(s.text("文件名（可选）", "File name (optional)", "ファイル名（任意）")) }, placeholder = { Text(s.text("留空时使用正文第一句", "First sentence when blank", "空欄の場合は本文の最初の文"), fontSize = 12.sp) }, suffix = { if (!draft.name.endsWith(".txt")) Text(".txt", color = MaterialTheme.colorScheme.onSurfaceVariant) },
                 enabled = !busy, singleLine = true, textStyle = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.SemiBold), shape = RoundedCornerShape(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Category.entries.forEach { category ->
                 FilterChip(draft.category == category, { onChange(draft.copy(category = category)) }, enabled = !busy, label = { Text(s.category(category)) })
@@ -425,7 +455,7 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("${draft.content.length} " + s.text("字", "chars", "文字"), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.width(14.dp))
-                Text(if (!dirty) s.saved else if (retained) s.draftSaved else s.text("正在保留草稿…", "Retaining draft…", "下書きを保存中…"), fontSize = 11.sp, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if (!dirty) s.saved else if (autoSave) s.text("正在自动保存…", "Saving…", "保存中…") else if (retained) s.draftSaved else s.text("正在保留草稿…", "Retaining draft…", "下書きを保存中…"), fontSize = 11.sp, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 IconButton(enabled = !busy, onClick = onCopy) { Icon(Icons.Default.ContentCopy, s.copy, Modifier.size(18.dp)) }
                 IconButton(enabled = !busy, onClick = onPaste) { Icon(Icons.Default.ContentPaste, s.paste, Modifier.size(18.dp)) }
             }
