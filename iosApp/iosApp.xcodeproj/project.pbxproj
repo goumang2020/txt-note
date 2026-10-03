@@ -57,13 +57,13 @@
         A00000000000000000000018 = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.2; SWIFT_VERSION = 5.0; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; }; name = Release; };
         A00000000000000000000019 = {isa = XCBuildConfiguration; buildSettings = {
             CODE_SIGN_STYLE = Automatic;
-            CURRENT_PROJECT_VERSION = 20002;
+            CURRENT_PROJECT_VERSION = 20003;
             ENABLE_USER_SCRIPT_SANDBOXING = NO;
             FRAMEWORK_SEARCH_PATHS = ("$(inherited)", "$(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)");
             GENERATE_INFOPLIST_FILE = NO;
             INFOPLIST_FILE = iosApp/Info.plist;
             LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
-            MARKETING_VERSION = 2.0.2;
+            MARKETING_VERSION = 2.0.3;
             OTHER_LDFLAGS = ("$(inherited)", "-framework", TxtNote, "-lsqlite3");
             PRODUCT_BUNDLE_IDENTIFIER = io.github.goumang.txtnote;
             PRODUCT_NAME = txtNote;
@@ -74,13 +74,13 @@
         }; name = Debug; };
         A00000000000000000000020 = {isa = XCBuildConfiguration; buildSettings = {
             CODE_SIGN_STYLE = Automatic;
-            CURRENT_PROJECT_VERSION = 20002;
+            CURRENT_PROJECT_VERSION = 20003;
             ENABLE_USER_SCRIPT_SANDBOXING = NO;
             FRAMEWORK_SEARCH_PATHS = ("$(inherited)", "$(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)");
             GENERATE_INFOPLIST_FILE = NO;
             INFOPLIST_FILE = iosApp/Info.plist;
             LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
-            MARKETING_VERSION = 2.0.2;
+            MARKETING_VERSION = 2.0.3;
             OTHER_LDFLAGS = ("$(inherited)", "-framework", TxtNote, "-lsqlite3");
             PRODUCT_BUNDLE_IDENTIFIER = io.github.goumang.txtnote;
             PRODUCT_NAME = txtNote;

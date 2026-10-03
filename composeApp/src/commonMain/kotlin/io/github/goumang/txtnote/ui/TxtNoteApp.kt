@@ -103,10 +103,14 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
     fun edit(note: Note) = navigate { draft = note.toDraft() }
     fun create() = navigate { draft = Draft(noteId = if (autoSave) platform.newId() else null, category = category ?: Category.DAILY) }
 
+    fun recoverDraft(recovered: Draft?): Draft? = recovered?.let {
+        if (autoSave && it.noteId == null) it.copy(noteId = platform.newId()) else it
+    }
+
     LaunchedEffect(repository) {
         try {
             repository.load()
-            draft = repository.state.value.draft?.let { if (autoSave && it.noteId == null) it.copy(noteId = platform.newId()) else it }
+            draft = recoverDraft(repository.state.value.draft)
             persistedDraft = draft
             loaded = true
         } catch (e: Exception) { loadError = e.message ?: "Cannot open notebook" }
@@ -155,7 +159,7 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
                     Spacer(Modifier.height(20.dp))
                     if (loadError == null) CircularProgressIndicator() else {
                         Text(loadError!!)
-                        TextButton(onClick = { action { repository.load(); draft = repository.state.value.draft; loaded = true; loadError = null } }) { Text(s.text("重新打开", "Retry", "再試行")) }
+                        TextButton(onClick = { action { repository.load(); draft = recoverDraft(repository.state.value.draft); loaded = true; loadError = null } }) { Text(s.text("重新打开", "Retry", "再試行")) }
                     }
                 }
                 return@Surface
@@ -226,7 +230,7 @@ fun TxtNoteApp(repository: NoteRepository, platform: PlatformServices,
                     val files = platform.importFiles(FileKind.BACKUP)
                     var count = 0
                     for (file in files) count += repository.restore(file.bytes)
-                    if (draft == null) draft = repository.state.value.draft
+                    if (draft == null) draft = recoverDraft(repository.state.value.draft)
                     if (files.isNotEmpty()) { settingsOpen = false; message(s.text("已恢复 $count 篇笔记", "Restored $count notes", "$count 件復元しました")) }
                 } }, onBackground = { action {
                     platform.importFiles(FileKind.IMAGE).firstOrNull()?.let {

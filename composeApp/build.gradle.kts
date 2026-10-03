@@ -9,7 +9,7 @@ plugins {
 }
 
 val desktopOnly = providers.gradleProperty("desktopOnly").orNull == "true"
-val appVersion = providers.gradleProperty("appVersion").orElse("2.0.2").get()
+val appVersion = providers.gradleProperty("appVersion").orElse("2.0.3").get()
 require(Regex("[0-9]+\\.[0-9]+\\.[0-9]+").matches(appVersion)) { "appVersion must be major.minor.patch" }
 val androidEnabled = !desktopOnly && providers.gradleProperty("iosOnly").orNull != "true"
 if (androidEnabled) apply(plugin = "com.android.library")

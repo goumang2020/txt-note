@@ -89,8 +89,8 @@ macOS 安装包暂未使用 Apple Developer 证书签名或公证。Android 使�
 
 ```bash
 # 先将全部代码推送到 GitHub，再推送发布标签。
-git tag -a v2.0.2 -m 'txtNote 2.0.1'
-git push origin v2.0.2
+git tag -a v2.0.3 -m 'txtNote 2.0.1'
+git push origin v2.0.3
 ```
 
 `vMAJOR.MINOR.PATCH` 标签会触发 `.github/workflows/release.yml`。流程完成测试、构建 APK 和两种 DMG 后，自动创建 GitHub Release 并上传安装包及校验值。标签中的版本会传给 Gradle，设置 Android 和 macOS 安装包版本。

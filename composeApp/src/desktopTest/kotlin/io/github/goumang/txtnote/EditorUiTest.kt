@@ -8,6 +8,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import io.github.goumang.txtnote.data.NoteRepository
 import io.github.goumang.txtnote.data.NotebookStore
+import io.github.goumang.txtnote.data.notebookJson
+import io.github.goumang.txtnote.model.Draft
+import io.github.goumang.txtnote.platform.*
 import io.github.goumang.txtnote.model.Notebook
 import io.github.goumang.txtnote.model.ThemeColor
 import io.github.goumang.txtnote.platform.DesktopServices
@@ -185,6 +188,26 @@ class EditorUiTest {
             assertEquals("返回时的最新正文。", repository.state.value.notes.single().content)
             rule.onNodeWithText("保存这次修改？").assertDoesNotExist()
         } finally { release.countDown() }
+    }
+
+    @Test fun androidRestoredUnnamedDraftKeepsOneIdentityAcrossAutosaves() {
+        val platform = object : PlatformServices by DesktopServices() {
+            override suspend fun importFiles(kind: FileKind) = listOf(ImportedFile("backup.json",
+                notebookJson.encodeToString(Notebook(draft = Draft(content = "恢复的正文。"))).encodeToByteArray()))
+        }
+        val repository = NoteRepository(object : NotebookStore {
+            override fun load(): Notebook? = null
+            override fun save(notebook: Notebook) {}
+        }, platform)
+        rule.setContent { Box(Modifier.requiredSize(390.dp, 740.dp)) { TxtNoteApp(repository, platform, autoSave = true) } }
+        rule.waitUntil(10_000) { rule.onAllNodesWithText("新建笔记").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithContentDescription("设置").performClick()
+        rule.onNodeWithText("恢复备份").performScrollTo().performClick()
+        rule.waitUntil(10_000) { repository.state.value.notes.size == 1 }
+        val id = repository.state.value.notes.single().id
+        rule.onNodeWithTag("note-content").performTextReplacement("恢复后的最新正文。")
+        rule.waitUntil(10_000) { repository.state.value.notes.singleOrNull()?.content == "恢复后的最新正文。" }
+        assertEquals(id, repository.state.value.notes.single().id)
     }
 
     @Test fun settingsApplyPresetAndCustomColorsImmediately() {

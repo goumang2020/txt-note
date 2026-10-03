@@ -3,7 +3,7 @@ plugins {
     kotlin("android")
     kotlin("plugin.compose")
 }
-val appVersion = providers.gradleProperty("appVersion").orElse("2.0.2").get()
+val appVersion = providers.gradleProperty("appVersion").orElse("2.0.3").get()
 require(Regex("[0-9]+\\.[0-9]+\\.[0-9]+").matches(appVersion)) { "appVersion must be major.minor.patch" }
 val versionParts = appVersion.split('.').map(String::toInt)
 require(versionParts[0] in 0..2099 && versionParts[1] in 0..999 && versionParts[2] in 0..999) { "Version exceeds Android version code limits" }
